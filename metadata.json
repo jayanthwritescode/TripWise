@@ -1,0 +1,7 @@
+{
+  "name": "Tripwise",
+  "description": "A smart, premium AI-powered travel itinerary planner featuring integrated flight and hotel discovery using Google Search grounding.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
