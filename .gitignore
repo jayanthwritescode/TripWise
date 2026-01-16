@@ -1,3 +1,7 @@
+# Firebase
+.firebase/
+firebase-debug.log
+firestore-debug.log
 
 # Dependencies
 node_modules/
