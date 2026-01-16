@@ -5,23 +5,33 @@ import { TripDetails, Itinerary, SearchResult, FlightInfo, HeroImage } from "../
 const getAi = () => {
   const apiKey = (import.meta as any).env?.VITE_API_KEY || process.env.API_KEY;
   if (!apiKey) {
-    console.error("TripWise: API Key is missing. Check your .env file.");
+    console.error("TripWise: API Key is missing. Check your environment variables.");
   }
   return new GoogleGenAI({ apiKey: apiKey || "" });
 };
 
 /**
- * Helper to handle and format API errors
+ * Universal Error Handler
+ * Categorizes any API or network failure into user-friendly states.
  */
-const handleApiError = (error: any): never => {
-  const msg = error?.message || "";
-  if (msg.includes("429") || msg.toLowerCase().includes("exhausted") || msg.toLowerCase().includes("rate limit")) {
-    throw new Error("API_RATE_LIMIT");
+const handleAnyApiError = (error: any): never => {
+  const msg = (error?.message || error?.toString() || "").toLowerCase();
+  console.error("Gemini API Error details:", error);
+
+  if (msg.includes("429") || msg.includes("quota") || msg.includes("limit")) {
+    throw new Error("ERR_RATE_LIMIT");
   }
-  if (msg.includes("API_KEY_INVALID")) {
-    throw new Error("API_KEY_ERROR");
+  if (msg.includes("network") || msg.includes("fetch") || msg.includes("failed to fetch")) {
+    throw new Error("ERR_NETWORK");
   }
-  throw new Error("SERVICE_UNAVAILABLE");
+  if (msg.includes("key") || msg.includes("403") || msg.includes("401")) {
+    throw new Error("ERR_AUTH");
+  }
+  if (msg.includes("safety") || msg.includes("blocked")) {
+    throw new Error("ERR_SAFETY");
+  }
+  
+  throw new Error("ERR_SERVICE_DOWN");
 };
 
 /**
@@ -31,7 +41,7 @@ export const getDestinationSuggestions = async (input: string): Promise<string[]
   if (!input || input.trim().length < 2) return [];
   const ai = getAi();
   
-  const prompt = `Task: Provide exactly 5 real-world travel destinations (City, Country) that start with or closely match: "${input}". 
+  const prompt = `Task: Provide exactly 5 real-world travel destinations (City, Country) starting with: "${input}". 
   Format: JSON array of strings only.`;
 
   try {
@@ -43,60 +53,55 @@ export const getDestinationSuggestions = async (input: string): Promise<string[]
         responseSchema: {
           type: Type.ARRAY,
           items: { type: Type.STRING }
-        },
-        thinkingConfig: { thinkingBudget: 0 }
+        }
       }
     });
 
     const text = response.text?.trim();
-    if (!text) return [];
-    const results = JSON.parse(text);
-    return Array.isArray(results) ? results.slice(0, 5) : [];
+    return text ? JSON.parse(text) : [];
   } catch (error) {
-    console.warn("Autocomplete failed:", error);
+    // Autocomplete should fail silently to not interrupt typing
     return [];
   }
 };
 
 /**
  * Illustration Generation: High-res travel photography.
+ * Always returns a valid HeroImage even on error.
  */
-export const generateDestinationIllustration = async (destination: string, heroSearchTerm?: string): Promise<HeroImage | undefined> => {
-  const ai = getAi();
-  
-  const prompt = `A professional, ultra-high resolution travel photography image of ${destination}. 
-  Style: Cinematic, professional photography, stunning lighting, wide angle, vibrant colors. 
-  Context: ${heroSearchTerm || 'scenic vista'}. No text, no logos, no watermarks.`;
+export const generateDestinationIllustration = async (destination: string, heroSearchTerm?: string): Promise<HeroImage> => {
+  const fallback: HeroImage = {
+    url: "https://images.unsplash.com/photo-1469854523086-cc02fe5d8800?ixlib=rb-4.0.3&auto=format&fit=crop&w=1600&q=80",
+    photographerName: "TripWise Collection",
+    photographerUrl: "#"
+  };
 
   try {
+    const ai = getAi();
+    const prompt = `Professional travel photography: ${destination}, ${heroSearchTerm || 'scenic vista'}. Ultra-high res, cinematic lighting, wide angle.`;
+
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
-      contents: {
-        parts: [{ text: prompt }]
-      },
-      config: {
-        imageConfig: { aspectRatio: "16:9" }
-      }
+      contents: { parts: [{ text: prompt }] },
+      config: { imageConfig: { aspectRatio: "16:9" } }
     });
 
-    if (response.candidates?.[0]?.content?.parts) {
-      for (const part of response.candidates[0].content.parts) {
+    const parts = response.candidates?.[0]?.content?.parts;
+    if (parts) {
+      for (const part of parts) {
         if (part.inlineData) {
           return {
             url: `data:image/png;base64,${part.inlineData.data}`,
-            photographerName: "TripWise AI Artist",
+            photographerName: "AI Artist",
             photographerUrl: "#"
           };
         }
       }
     }
-    throw new Error("No image generated");
+    return fallback;
   } catch (error) {
-    return {
-      url: "https://images.unsplash.com/photo-1469854523086-cc02fe5d8800?ixlib=rb-4.0.3&auto=format&fit=crop&w=1600&q=80",
-      photographerName: "Travel Collection",
-      photographerUrl: "#"
-    };
+    console.warn("Visual generation skipped, using fallback.");
+    return fallback;
   }
 };
 
@@ -104,13 +109,10 @@ export const generateDestinationIllustration = async (destination: string, heroS
  * Itinerary Generation.
  */
 export const generateItinerary = async (details: TripDetails): Promise<Itinerary> => {
-  const ai = getAi();
-  
-  const prompt = `Create a bespoke travel itinerary for a ${details.days}-day trip to ${details.destination} starting on ${details.startDate}. 
-  Objective: ${details.objective}. 
-  Detailed Plan: Include title, summary, heroSearchTerm (3 tags), and daily theme with weather and activities.`;
-
   try {
+    const ai = getAi();
+    const prompt = `Create a bespoke travel itinerary for a ${details.days}-day trip to ${details.destination} starting on ${details.startDate}. Objective: ${details.objective}. Include title, summary, heroSearchTerm, and daily theme with weather and activities.`;
+
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: prompt,
@@ -154,16 +156,15 @@ export const generateItinerary = async (details: TripDetails): Promise<Itinerary
               }
             }
           }
-        },
-        thinkingConfig: { thinkingBudget: 0 }
+        }
       }
     });
 
     const json = response.text?.trim();
-    if (!json) throw new Error("Empty response");
+    if (!json) throw new Error("EMPTY_RESPONSE");
     return JSON.parse(json);
   } catch (error) {
-    return handleApiError(error);
+    return handleAnyApiError(error);
   }
 };
 
@@ -171,77 +172,34 @@ export const generateItinerary = async (details: TripDetails): Promise<Itinerary
  * Robust Search Discovery.
  */
 export const searchTravelData = async (query: string, isFlight: boolean = false, useGrounding: boolean = true): Promise<SearchResult> => {
-  const ai = getAi();
-  
-  const structuralRules = isFlight 
-    ? `Provide 3 current flight options. Use this format:
-       [OPTION_START]
-       NAME: [Airline]
-       DURATION: [h/m]
-       STOPS: [Stops]
-       TIMES: [Window]
-       LAYOVERS: [Cities/None]
-       PRICE: [Cost]
-       TAG: [Label]
-       REASONING: [Why]
-       [OPTION_END]
-       ---`
-    : `Provide 3 real hotel options. Use this format:
-       [OPTION_START]
-       NAME: [Name]
-       RATING: [Score]
-       PRICE: [Rate]
-       TAG: [Label]
-       REASONING: [Why]
-       CONTEXT: [Atmosphere]
-       [OPTION_END]
-       ---`;
-
-  const prompt = `Task: ${query}.
-  Requirement: Return ONLY 3 structured blocks using the format provided. 
-  ${useGrounding ? 'Use real-time search data.' : 'Use your internal knowledge if live search is limited.'}
-  
-  ${structuralRules}`;
-
   try {
-    const config: any = {
-      maxOutputTokens: 2000,
-      thinkingConfig: { thinkingBudget: 0 }
-    };
+    const ai = getAi();
+    const structuralRules = isFlight 
+      ? `Provide 3 flight options. Format: [OPTION_START] NAME: [Airline] PRICE: [Cost] DURATION: [Time] STOPS: [Stops] [OPTION_END] ---`
+      : `Provide 3 hotel options. Format: [OPTION_START] NAME: [Hotel] PRICE: [Rate] RATING: [Score] [OPTION_END] ---`;
 
-    if (useGrounding) {
-      config.tools = [{ googleSearch: {} }];
-    }
+    const config: any = { maxOutputTokens: 2000 };
+    if (useGrounding) config.tools = [{ googleSearch: {} }];
 
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: prompt,
-      config: config,
+      contents: `Task: ${query}. Rules: Return ONLY structured blocks. ${structuralRules}`,
+      config
     });
 
     const text = response.text || "";
-    
-    if (text.length < 50 || !text.includes('NAME:')) {
-      if (useGrounding) throw new Error("Grounded search failed format check");
+    if (text.length < 50) {
+      if (useGrounding) throw new Error("FALLBACK_TRIGGER");
     }
-
-    const chunks = (response.candidates?.[0]?.groundingMetadata?.groundingChunks as any[]) || [];
 
     return {
       text: text,
-      sources: chunks
+      sources: (response.candidates?.[0]?.groundingMetadata?.groundingChunks as any[]) || []
     };
   } catch (error: any) {
-    const msg = error?.message || "";
-    if (msg.includes("429") || msg.toLowerCase().includes("exhausted") || msg.toLowerCase().includes("rate limit")) {
-      throw new Error("API_RATE_LIMIT");
-    }
-
     if (useGrounding) {
-      console.warn("Retrying search without grounding tool...");
       return searchTravelData(query, isFlight, false);
     }
-    
-    return handleApiError(error);
+    return handleAnyApiError(error);
   }
 };
